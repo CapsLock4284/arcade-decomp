@@ -33,13 +33,15 @@ said as calls and returns, as the C has them:
     instruction (Effect frame_wait) and takes the interrupts after it (take_interrupts), as the scaffold does;
     after an instruction that writes the status register, the interrupts it lets through are taken too.
 With the profile's TIMING_MODEL (a game whose runtime keeps the board's time: its frames, the program's
-slowdown), every basic block ends with Effect("m68k_block", cycles) (before the call that ends it), the block's instructions' time
-(m68000/timing.py), where the runtime lets the time pass and takes an interrupt that has come (a block ends after
-every call, so that a callee starts when its caller's time says and the code after it counts only when it is come
-back to); a branch whose ways
-take different times (Bcc, DBcc) adds the extra cycles of the longer way in its own block, on the branch's
-condition (Effect("m68k_cycles", condition ? cycles : 0)), so that the blocks and their edges are the same as
-without the timing (the code a branch reaches with another stack depth is copied by its address).
+slowdown), every instruction is followed by Effect("m68k_block", cycles, point) (a call's before the call): its time
+(m68000/timing.py) and the point in it an interrupt request has to have come by to be taken at its end
+(timing.interrupt_check), where the runtime lets the time pass and takes an interrupt that came in time; a request
+that came later is taken after the next instruction, as on the 68000. A block ends after every call, so that a
+callee starts when its caller's time says and the code after it counts only when it is come back to. A branch
+whose ways take different times (Bcc, DBcc) adds the extra cycles of the longer way before its m68k_block, on the
+branch's condition (Effect("m68k_cycles", condition ? cycles : 0)), and its m68k_block has the other way's point
+too (a third argument), so that the blocks and their edges are the same as without the timing (the code a branch
+reaches with another stack depth is copied by its address).
 The status register's mode bit swaps the stack pointers on the 68000: the C has one stack (the decompiler's
 slots), so a write of the status register is the interrupt mask and the flags (write_sr), and USP is never read
 but in the stretch left out.
@@ -64,7 +66,7 @@ INTERRUPT_STACK_SWITCH = getattr(game_profile, "INTERRUPT_STACK_SWITCH", None)
 # stretches where a privileged instruction needs no check of the mode
 SUPERVISOR_CODE = getattr(game_profile, "SUPERVISOR_CODE", ())
 REPLACED_CODE = getattr(game_profile, "REPLACED_CODE", {})
-# the board's time kept (Effect m68k_block at every block's end, m68k_cycles on a branch's longer way)
+# the board's time kept (Effect m68k_block after every instruction, m68k_cycles on a branch's longer way)
 TIMING_MODEL = getattr(game_profile, "TIMING_MODEL", False)
 # the devices that do something when read (TMNT's K051960 in its ROM readback mode): a read there stays, its value
 # used or not
@@ -337,21 +339,68 @@ class Builder:
         return function
 
     def time_blocks(self, function, body):
-        """Each block's instructions' time in its m68k_block (a branch the shorter way: timing.cycles), after its
-        instructions (before the call that ends it, if one does): an interrupt the time brings comes after the
-        instructions that were due before it, never sooner, as the 68000 takes one between two instructions when
-        it has come (a few instructions later at most). A block an exception's check split off counts its own"""
+        """Each instruction's time in an m68k_block after it (a branch the shorter way: timing.cycles; a call's
+        before the call): the 68000 takes an interrupt between two instructions, at the end of the one its request
+        came in (the runtime has the 68000's lateness, game/support.h's M68K_IRQ_LATE), so the interrupt the time
+        brings comes after the instructions that were due before it, and before the rest. An instruction the C
+        has no statement for counts its time where it lies, between its neighbours' statements"""
         for block in list(function.blocks.values()) + self.extra_blocks:
             if not block.addresses:
                 continue
-            timed = ir.Effect("m68k_block", (ir.const(sum(timing.cycles(body[address])[0]
-                                                           for address in block.addresses if address in body)),))
-            timed.origin = block.addresses[-1]
-            last = block.statements[-1] if block.statements else None
-            if isinstance(last, ir.Call):
-                block.statements.insert(len(block.statements) - 1, timed)
-            else:
-                block.statements.append(timed)
+            statements = []
+            pending = list(block.addresses)
+            for statement in block.statements:
+                origin = getattr(statement, "origin", None)
+                # (the instructions before this statement's own: their time is due before it)
+                while pending and pending[0] != origin and origin in pending:
+                    statements.append(self.timed(body, pending.pop(0)))
+                if isinstance(statement, ir.Call) and pending and pending[0] == origin:
+                    statements.append(self.timed(body, pending.pop(0)))    # (the call's own time, before it)
+                statements.append(statement)
+            for address in pending:
+                timed = self.timed(body, address)
+                if statements and isinstance(statements[-1], ir.Call):
+                    statements.insert(len(statements) - 1, timed)
+                else:
+                    statements.append(timed)
+            block.statements = statements
+
+    def timed(self, body, address):
+        """The instruction's m68k_block: its cycles and its interrupt point (timing.interrupt_check), and for a
+        Bcc or DBcc its other way's point"""
+        if address not in body:
+            timed = ir.Effect("m68k_block", (ir.const(0), ir.const(0)))
+            timed.origin = address
+            return timed
+        instruction = body[address]
+        cycles = timing.cycles(instruction)[0]
+        point, other_way = timing.interrupt_check(instruction)
+        if address in self.program.register_calls and instruction.mnemonic not in ("bra", "jmp"):
+            passed, passed_point = self.passed_over(address)
+            point = cycles + passed_point if passed else point
+            cycles += passed
+        arguments = (ir.const(cycles), ir.const(point)) + (() if other_way is None else (ir.const(other_way),))
+        timed = ir.Effect("m68k_block", arguments)
+        timed.origin = address
+        return timed
+
+    def passed_over(self, address):
+        """A call the profile makes of an instruction that is not the jump (a pushed return address, "pea" then
+        "bra" to the routine): the time of the instructions after it, up to the routine, which its call passes,
+        and the interrupt point of the last of them from where they begin"""
+        routine = self.program.register_calls[address][0]
+        instructions = self.analysis.instructions
+        where, cycles, point = key(address + instructions[address].length), 0, 0
+        for _ in range(8):
+            if where == routine or where not in instructions:
+                break
+            instruction = instructions[where]
+            point = cycles + timing.interrupt_check(instruction)[0]
+            cycles += timing.cycles(instruction)[0]
+            if instruction.mnemonic in ("bra", "jmp"):
+                break
+            where = key(where + instruction.length)
+        return cycles, point
 
     @staticmethod
     def longer_way(statements, condition, cycles):

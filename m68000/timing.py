@@ -3,7 +3,7 @@
 Name:        timing.py
 Description: how many clock cycles each 68000 instruction takes, for a game whose profile asks for its timing
              (TIMING_MODEL: the board's frames, the program's slowdown)
-Version:     0.1.0
+Version:     0.2.0
 Created:     11-11-2026
 
 cycles(instruction) is (base, extras): base the cycles the instruction takes the way the block counts it, extras
@@ -16,6 +16,13 @@ The rest take the same time every way they go.
 A timed game's lift (m68000/lift.py) adds what the data decides at run time (Effect m68k_cycles): MULU/MULS 2 a
 counted bit of the source, DIVU/DIVS their whole time (Jorge Cwik's algorithm of the 68000's microcode), a shift by a
 register 2 a bit, BCHG/BCLR/BSET by a register 2 more for the bits 16-31; base_cycles counts the rest of them.
+interrupt_check(instruction) is where in the instruction the 68000 decides to take an interrupt at its end: (k, k_way)
+cycles from its start. The request has to have come by then; one that comes later is taken at the end of the next
+instruction. k_way is None but for Bcc and DBcc: their other way's point is k_way plus its extra cycles. The 68000
+samples its interrupt lines at one step of each instruction's microcode, and a request reaches it only when a bus
+cycle ends (MAME's core, its m68000.lst: the point is the end of the last bus cycle before that step, mostly the
+start of the instruction's last prefetch, 4 cycles before its end). INTERRUPT_POINTS lists the forms that differ:
+("late", n) n cycles before the end, ("k", n) n cycles from the start (a time the data decides comes after it).
 These are the Motorola M68000 User's Manual's timings (section 8, "Instruction Execution Times"), which MAME's
 core keeps; tools/cref/cref_timed (DonPachi's) measures the frames on MAME's core, to compare.
 """
@@ -48,6 +55,79 @@ IMMEDIATE = ("addi", "subi", "andi", "ori", "eori", "cmpi")
 SINGLE = ("clr", "neg", "negx", "not")
 SHIFTS = ("asl", "asr", "lsl", "lsr", "rol", "ror", "roxl", "roxr")
 DIVIDE = ("divu", "divs")
+
+
+# the forms whose interrupt point is not 4 cycles before their end (MAME's m68000.lst, BSD-3-Clause, worked out from
+# its microcode): "mnemonic.size:source,destination"
+INTERRUPT_POINTS = {
+    ('k', 0): (
+        'divs.w:dreg,dreg', 'reset.:',
+    ),
+    ('k', 4): (
+        'asl.b:dreg,dreg', 'asl.b:quick,dreg', 'asl.l:dreg,dreg', 'asl.l:quick,dreg', 'asl.w:dreg,dreg',
+        'asl.w:quick,dreg', 'asr.b:dreg,dreg', 'asr.b:quick,dreg', 'asr.l:dreg,dreg', 'asr.l:quick,dreg',
+        'asr.w:dreg,dreg', 'asr.w:quick,dreg', 'bchg.:dreg,dreg', 'bclr.:dreg,dreg', 'bset.:dreg,dreg',
+        'divs.w:immediate,dreg', 'divs.w:indirect,dreg', 'divs.w:postinc,dreg', 'lsl.b:dreg,dreg',
+        'lsl.b:quick,dreg', 'lsl.l:dreg,dreg', 'lsl.l:quick,dreg', 'lsl.w:dreg,dreg', 'lsl.w:quick,dreg',
+        'lsr.b:dreg,dreg', 'lsr.b:quick,dreg', 'lsr.l:dreg,dreg', 'lsr.l:quick,dreg', 'lsr.w:dreg,dreg',
+        'lsr.w:quick,dreg', 'muls.w:dreg,dreg', 'mulu.w:dreg,dreg', 'rol.b:dreg,dreg', 'rol.b:quick,dreg',
+        'rol.l:dreg,dreg', 'rol.l:quick,dreg', 'rol.w:dreg,dreg', 'rol.w:quick,dreg', 'ror.b:dreg,dreg',
+        'ror.b:quick,dreg', 'ror.l:dreg,dreg', 'ror.l:quick,dreg', 'ror.w:dreg,dreg', 'ror.w:quick,dreg',
+        'roxl.b:dreg,dreg', 'roxl.b:quick,dreg', 'roxl.l:dreg,dreg', 'roxl.l:quick,dreg', 'roxl.w:dreg,dreg',
+        'roxl.w:quick,dreg', 'roxr.b:dreg,dreg', 'roxr.b:quick,dreg', 'roxr.l:dreg,dreg', 'roxr.l:quick,dreg',
+        'roxr.w:dreg,dreg', 'roxr.w:quick,dreg',
+    ),
+    ('k', 6): (
+        'divs.w:predec,dreg',
+    ),
+    ('k', 8): (
+        'bchg.:immediate,dreg', 'bclr.:immediate,dreg', 'bset.:immediate,dreg', 'divs.w:abs_short,dreg',
+        'divs.w:disp,dreg', 'divs.w:pc_disp,dreg', 'muls.w:immediate,dreg', 'muls.w:indirect,dreg',
+        'muls.w:postinc,dreg', 'mulu.w:immediate,dreg', 'mulu.w:indirect,dreg', 'mulu.w:postinc,dreg',
+    ),
+    ('k', 10): (
+        'divs.w:index,dreg', 'divs.w:pc_index,dreg', 'muls.w:predec,dreg', 'mulu.w:predec,dreg',
+    ),
+    ('k', 12): (
+        'divs.w:abs_long,dreg', 'muls.w:abs_short,dreg', 'muls.w:disp,dreg', 'muls.w:pc_disp,dreg',
+        'mulu.w:abs_short,dreg', 'mulu.w:disp,dreg', 'mulu.w:pc_disp,dreg',
+    ),
+    ('k', 14): (
+        'muls.w:index,dreg', 'muls.w:pc_index,dreg', 'mulu.w:index,dreg', 'mulu.w:pc_index,dreg',
+    ),
+    ('k', 16): (
+        'muls.w:abs_long,dreg', 'mulu.w:abs_long,dreg',
+    ),
+    ('late', 2): (
+        'abcd.:dreg,dreg', 'add.l:abs_long,dreg', 'add.l:abs_short,dreg', 'add.l:disp,dreg', 'add.l:index,dreg',
+        'add.l:indirect,dreg', 'add.l:pc_disp,dreg', 'add.l:pc_index,dreg', 'add.l:postinc,dreg',
+        'add.l:predec,dreg', 'adda.l:abs_long,areg', 'adda.l:abs_short,areg', 'adda.l:disp,areg',
+        'adda.l:index,areg', 'adda.l:indirect,areg', 'adda.l:pc_disp,areg', 'adda.l:pc_index,areg',
+        'adda.l:postinc,areg', 'adda.l:predec,areg', 'and.l:abs_long,dreg', 'and.l:abs_short,dreg',
+        'and.l:disp,dreg', 'and.l:index,dreg', 'and.l:indirect,dreg', 'and.l:pc_disp,dreg', 'and.l:pc_index,dreg',
+        'and.l:postinc,dreg', 'and.l:predec,dreg', 'btst.:dreg,dreg', 'btst.:dreg,immediate', 'btst.:immediate,dreg',
+        'clr.l:dreg', 'cmp.l:abs_long,dreg', 'cmp.l:abs_short,dreg', 'cmp.l:areg,dreg', 'cmp.l:disp,dreg',
+        'cmp.l:dreg,dreg', 'cmp.l:immediate,dreg', 'cmp.l:index,dreg', 'cmp.l:indirect,dreg', 'cmp.l:pc_disp,dreg',
+        'cmp.l:pc_index,dreg', 'cmp.l:postinc,dreg', 'cmp.l:predec,dreg', 'cmpa.l:abs_long,areg',
+        'cmpa.l:abs_short,areg', 'cmpa.l:areg,areg', 'cmpa.l:disp,areg', 'cmpa.l:dreg,areg', 'cmpa.l:immediate,areg',
+        'cmpa.l:index,areg', 'cmpa.l:indirect,areg', 'cmpa.l:pc_disp,areg', 'cmpa.l:pc_index,areg',
+        'cmpa.l:postinc,areg', 'cmpa.l:predec,areg', 'cmpa.w:abs_long,areg', 'cmpa.w:abs_short,areg',
+        'cmpa.w:areg,areg', 'cmpa.w:disp,areg', 'cmpa.w:dreg,areg', 'cmpa.w:immediate,areg', 'cmpa.w:index,areg',
+        'cmpa.w:indirect,areg', 'cmpa.w:pc_disp,areg', 'cmpa.w:pc_index,areg', 'cmpa.w:postinc,areg',
+        'cmpa.w:predec,areg', 'cmpi.l:immediate,dreg', 'exg.:areg,areg', 'exg.:dreg,areg', 'exg.:dreg,dreg',
+        'move.:sr,dreg', 'nbcd.:dreg', 'neg.l:dreg', 'negx.l:dreg', 'not.l:dreg', 'or.l:abs_long,dreg',
+        'or.l:abs_short,dreg', 'or.l:disp,dreg', 'or.l:index,dreg', 'or.l:indirect,dreg', 'or.l:pc_disp,dreg',
+        'or.l:pc_index,dreg', 'or.l:postinc,dreg', 'or.l:predec,dreg', 'sbcd.:dreg,dreg', 'sub.l:abs_long,dreg',
+        'sub.l:abs_short,dreg', 'sub.l:disp,dreg', 'sub.l:index,dreg', 'sub.l:indirect,dreg', 'sub.l:pc_disp,dreg',
+        'sub.l:pc_index,dreg', 'sub.l:postinc,dreg', 'sub.l:predec,dreg', 'suba.l:abs_long,areg',
+        'suba.l:abs_short,areg', 'suba.l:disp,areg', 'suba.l:index,areg', 'suba.l:indirect,areg',
+        'suba.l:pc_disp,areg', 'suba.l:pc_index,areg', 'suba.l:postinc,areg', 'suba.l:predec,areg',
+    ),
+    ('late', 6): (
+        'lea.:index,areg', 'lea.:pc_index,areg', 'trap.:quick',
+    ),
+}
+POINT_OF_FORM = {form: rule for rule, forms in INTERRUPT_POINTS.items() for form in forms}
 
 
 def ea(operand, long):
@@ -209,3 +289,25 @@ def cycles(instruction):
     if instruction.mnemonic == "dbcc":
         return base, {"condition": 2, "expired": 4}
     return base, {}
+
+
+def interrupt_check(instruction):
+    """(k, k_way): the cycles from the instruction's start to the point an interrupt request has to have come by to
+    be taken at its end (the block's way); k_way for a Bcc's or DBcc's other way, plus that way's extra cycles"""
+    name = instruction.mnemonic
+    base = base_cycles(instruction)
+    if name == "bcc":
+        if instruction.length == 2:
+            return 0, 4    # (.b: not taken 8, the request by its start; taken 10, by 6)
+        return 6, 6        # (.w: taken 10, by 6; not taken 12, by 8)
+    if name == "bra":
+        return 6, None
+    if name == "dbcc":
+        return 6, 6        # (10, 12, 14: 4 before the end each)
+    if name in ("divu", "chk"):
+        return ea(instruction.operands[0], False), None    # (the division's or the check's own time after it)
+    form = f"{name}.{instruction.size or ''}:{','.join(operand.mode for operand in instruction.operands)}"
+    kind, n = POINT_OF_FORM.get(form, ("late", 4))
+    if kind == "k":
+        return n, None
+    return max(base - n, 0), None

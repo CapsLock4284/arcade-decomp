@@ -345,8 +345,12 @@ class Writer(emit.FunctionWriter):
             # (the status register's system byte as the runtime has it: a timed game's)
             return [f"{self.register_set(statement.args[1].value)} = status_system();"]
         if name == "m68k_block":
-            # (a timed game's: the block's cycles pass, and an interrupt that has come is taken)
-            return [f"m68k_block({statement.args[0].value});"]
+            # (a timed game's: an instruction's cycles pass, and an interrupt that came by its point is taken; a
+            # Bcc's or DBcc's other way has a point of its own)
+            values = ", ".join(str(argument.value) for argument in statement.args)
+            if len(statement.args) == 3:
+                return [f"m68k_branch({values});"]
+            return [f"m68k_block({values});"]
         if name == "m68k_cycles":
             # (the extra cycles of a branch's longer way)
             return [f"m68k_cycles({self.exact(statement.args[0])});"]

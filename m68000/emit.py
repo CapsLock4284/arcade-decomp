@@ -314,7 +314,7 @@ class Printer(emit.Printer):
             function = {"": "m68k_shift", "cy": "m68k_shift_carry", "ov": "m68k_shift_overflow"}[part]
             text = f"{function}(M68K_{base.upper()}, {values[0]}, {values[1]}, {values[2]}, {args[0].bits})"
             return cprint.Value(text, cprint.PRIMARY, True, "u32")
-        if base in ("divu", "divs", "abcd", "sbcd", "chk"):
+        if base in ("divu", "divs", "mulu", "muls", "abcd", "sbcd", "chk"):
             return cprint.Value(f"m68k_{name}({', '.join(values)})", cprint.PRIMARY, True, "u32")
         return super().helper(name, args, bits)
 

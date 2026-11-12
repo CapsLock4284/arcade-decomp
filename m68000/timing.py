@@ -12,12 +12,10 @@ cycles(instruction) is (base, extras): base the cycles the instruction takes the
     taken 12: {"not_taken": 2}
   - DBcc: the block counts the loop (the counter not out, the condition false: 10); {"condition": 2} when the
     condition ends it (12), {"expired": 4} when the counter runs out (14)
-The rest take the same time every way they go. Where the time depends on the data, a fixed one is taken:
-  - shifts and rotates by a register's count: 6 + 2n (.l 8 + 2n) with n = 4, a typical count (DonPachi's
-    shifts by a register are mostly of a few bits)
-  - MULU / MULS: 38 + 2n with n = 8, half the bits (the manual's range is 38-70)
-  - DIVU 120, DIVS 140 (the manual's most are 140 and 158; most divisions end sooner)
-  - BCHG, BCLR, BSET on a data register: as for bit numbers 16-31 (+2), the slower way
+The rest take the same time every way they go.
+A timed game's lift (m68000/lift.py) adds what the data decides at run time (Effect m68k_cycles): MULU/MULS 2 a
+counted bit of the source, DIVU/DIVS their whole time (Jorge Cwik's algorithm of the 68000's microcode), a shift by a
+register 2 a bit, BCHG/BCLR/BSET by a register 2 more for the bits 16-31; base_cycles counts the rest of them.
 These are the Motorola M68000 User's Manual's timings (section 8, "Instruction Execution Times"), which MAME's
 core keeps; tools/cref/cref_timed (DonPachi's) measures the frames on MAME's core, to compare.
 """
@@ -34,6 +32,7 @@ MOVE_DESTINATION = {
     "dreg": (4, 4), "areg": (4, 4), "indirect": (8, 12), "postinc": (8, 12), "predec": (8, 14),
     "disp": (12, 16), "index": (14, 18), "abs_short": (12, 16), "abs_long": (16, 20),
 }
+MOVE_DESTINATION["predec"] = (8, 12)    # (MOVE.L to -(An) takes 12, as to (An): MAME's core, measured)
 # JMP, JSR, LEA, PEA by their operand's mode (table 8-12)
 JMP = {"indirect": 8, "disp": 10, "index": 14, "abs_short": 10, "abs_long": 12, "pc_disp": 10, "pc_index": 14}
 JSR = {"indirect": 16, "disp": 18, "index": 22, "abs_short": 18, "abs_long": 20, "pc_disp": 18, "pc_index": 22}
@@ -48,9 +47,7 @@ STANDARD = ("add", "sub", "and", "or", "cmp", "eor")
 IMMEDIATE = ("addi", "subi", "andi", "ori", "eori", "cmpi")
 SINGLE = ("clr", "neg", "negx", "not")
 SHIFTS = ("asl", "asr", "lsl", "lsr", "rol", "ror", "roxl", "roxr")
-SHIFT_COUNT = 4         # a shift by a register's count: the count taken
-MULTIPLY_BITS = 8       # MULU/MULS: the bits that cost 2 each
-DIVIDE = {"divu": 120, "divs": 140}
+DIVIDE = ("divu", "divs")
 
 
 def ea(operand, long):
@@ -138,7 +135,7 @@ def base_cycles(instruction):
         if len(ops) == 1:
             return 8 + ea(ops[0], False)                      # memory, by one bit
         count = ops[0]
-        n = count.value if count.mode in ("quick", "immediate") else SHIFT_COUNT
+        n = count.value if count.mode in ("quick", "immediate") else 0    # (by a register: the lift adds 2 a bit)
         return (8 if long else 6) + 2 * n
     if name in ("swap", "ext", "nop", "trapv", "illegal", "stop"):
         return 4
@@ -148,18 +145,19 @@ def base_cycles(instruction):
         static = ops[0].mode == "immediate"
         target = ops[1]
         if target.mode == "dreg":
+            high = 2 if static and (ops[0].value & 31) >= 16 else 0    # (bits 16-31; by a register the lift adds it)
             if name == "btst":
                 return 10 if static else 6
             if name == "bclr":
-                return 14 if static else 10
-            return 12 if static else 8
+                return (12 if static else 8) + high
+            return (10 if static else 6) + high
         if name == "btst":
             return (8 if static else 4) + ea(target, False)
         return (12 if static else 8) + ea(target, False)
     if name in ("mulu", "muls"):
-        return 38 + 2 * MULTIPLY_BITS + ea(ops[0], False)
+        return 38 + ea(ops[0], False)    # (+ 2 a counted bit: the lift adds it)
     if name in DIVIDE:
-        return DIVIDE[name] + ea(ops[0], False)
+        return ea(ops[0], False)         # (the division's own time: the lift adds it)
     if name == "chk":
         return 10 + ea(ops[0], False)
     if name == "lea":

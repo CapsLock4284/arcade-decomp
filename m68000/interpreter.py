@@ -146,8 +146,56 @@ def chk(value, bound):
     return negative, int(value & 0xFFFF == 0), 0, 0
 
 
+def multiply_cycles(name, source):
+    """A timed game's MULU/MULS cycles that the source decides (runtime m68000/ops.h's m68k_mulu_cycles)"""
+    source &= 0xFFFF
+    if name == "mulu":
+        return 2 * bin(source).count("1")
+    bits = source << 1
+    return 2 * bin((bits ^ (bits >> 1)) & 0xFFFF).count("1")
+
+
+def divide_cycles(name, dividend, divisor):
+    """A timed game's DIVU/DIVS time but the operand's (Jorge Cwik's algorithm: m68k_divu_cycles, m68k_divs_cycles)"""
+    if name == "divu":
+        divisor &= 0xFFFF
+        if not divisor:
+            return 0
+        if (dividend >> 16) >= divisor:
+            return 10
+        cycles, high = 38, divisor << 16
+        for _ in range(15):
+            before = dividend
+            dividend = (dividend << 1) & 0xFFFFFFFF
+            if before & 0x80000000:
+                dividend = (dividend - high) & 0xFFFFFFFF
+            else:
+                cycles += 2
+                if dividend >= high:
+                    dividend -= high
+                    cycles -= 1
+        return cycles * 2
+    a, b = signed(dividend, 32), signed(divisor, 16)
+    if not b:
+        return 0
+    cycles = 7 if a < 0 else 6
+    if (abs(a) >> 16) >= abs(b):
+        return (cycles + 2) * 2
+    quotient = abs(a) // abs(b)
+    cycles += 55 + ((-1 if a >= 0 else 1) if b >= 0 else 0)
+    for _ in range(15):
+        if not quotient & 0x8000:
+            cycles += 1
+        quotient = (quotient << 1) & 0xFFFF
+    return cycles * 2
+
+
 def helper(name, args, widths):
     """The value of helper:NAME on 'args', whose widths in bits are 'widths'"""
+    if name in ("mulu_cycles", "muls_cycles"):
+        return multiply_cycles(name[:4], args[0])
+    if name in ("divu_cycles", "divs_cycles"):
+        return divide_cycles(name[:4], args[0], args[1])
     if name in ("divu", "divu_s", "divu_z", "divu_ov", "divs", "divs_s", "divs_z", "divs_ov"):
         base, _, part = name.partition("_")
         result = (divu if base == "divu" else divs)(args[0], args[1])
@@ -369,7 +417,7 @@ class Machine:
                 elif statement.name == "stop":
                     self.write_sr(args[0])
                     raise Stopped()
-                elif statement.name in ("reset", "status_read"):
+                elif statement.name in ("reset", "status_read", "m68k_block", "m68k_cycles"):
                     pass    # (status_read: SR_SYSTEM, which the interpreter keeps as the CPU does)
                 else:
                     raise ValueError(f"unknown effect {statement.name}")

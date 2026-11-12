@@ -697,6 +697,9 @@ def do_mul(lifter, instruction):
     index = register(destination.reg)
     current = lifter.reg_value(index, 16, "operand")
     extend = ir.sext if instruction.mnemonic == "muls" else ir.zext
+    if STATUS_FROM_RUNTIME:
+        # (a timed game's: the 2 cycles each bit of the source costs, MULU its ones, MULS its changes from 0 to 1 or 1 to 0)
+        lifter.emit(ir.Effect("m68k_cycles", (ir.op(f"helper:{instruction.mnemonic}_cycles", (value,), 32),)))
     result = lifter.temp(ir.op("mul", (extend(current, 32), extend(value, 32)), 32), "result")
     lifter.logic_flags(result)
     lifter.set_reg(index, result, 32)
@@ -713,6 +716,9 @@ def do_div(lifter, instruction):
     lifter.set_flag("z", ir.op(f"helper:{name}_z", args, 1))
     lifter.set_flag("ov", ir.op(f"helper:{name}_ov", args, 1))
     lifter.set_flag("cy", const(0, 1))
+    if STATUS_FROM_RUNTIME:
+        # (a timed game's: the division's own time, which its values decide)
+        lifter.emit(ir.Effect("m68k_cycles", (ir.op(f"helper:{name}_cycles", args, 32),)))
     lifter.exception_if(ir.op("eq", (divisor, const(0, 16)), 1), VECTOR_ZERO_DIVIDE, lifter.next_address)
     lifter.set_reg(index, ir.op(f"helper:{name}", args, 32), 32)
 
@@ -808,6 +814,9 @@ def do_shift(lifter, instruction):
             count = const(counter.value, 8)
         else:
             count = lifter.temp(ir.op("and", (ir.trunc(ir.Reg(register(counter.reg)), 8), const(63, 8)), 8), "count")
+            if STATUS_FROM_RUNTIME:
+                # (a timed game's: 2 cycles a bit shifted)
+                lifter.emit(ir.Effect("m68k_cycles", (ir.op("shl", (ir.zext(count, 32), const(1, 8)), 32),)))
     value = lifter.read(location, bits, "operand")
     extend = lifter.temp(flag("x"), "extend")
     args = (value, count, extend)
@@ -835,6 +844,10 @@ def do_bit(lifter, instruction):
         count = const(number.value & (bits - 1), 8)
     else:
         count = lifter.temp(ir.op("and", (ir.trunc(ir.Reg(register(number.reg)), 8), const(bits - 1, 8)), 8), "bit")
+        if STATUS_FROM_RUNTIME and target.mode == "dreg" and name != "btst":
+            # (a timed game's: BCHG, BCLR, BSET on a register take 2 cycles more for the bits 16-31)
+            extra = ir.op("shr", (ir.op("and", (ir.zext(count, 32), const(16)), 32), const(3, 8)), 32)
+            lifter.emit(ir.Effect("m68k_cycles", (extra,)))
     if target.mode == "immediate":
         # (BTST Dn, #data: a bit of the immediate byte)
         location, value = None, const(target.value & 0xFF, 8)

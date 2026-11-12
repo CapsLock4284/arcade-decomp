@@ -35,6 +35,11 @@ Effects (the runtime does them, runtime/include/m68000/ops.h; the interpreter, h
                               supervisor's stack (PC, the status register), the CPU in supervisor mode, on
                               to the vector's handler; the rest of the instruction does not happen
   stop VALUE                  STOP: the status register, and the CPU waits for an interrupt
+  status_read 0 SR_SYSTEM     SR_SYSTEM as the runtime has the status register now, before an instruction reads
+                              it (MOVE from SR, ANDI/ORI/EORI to SR, a privileged one's check), for a game whose
+                              profile keeps the board's time (TIMING_MODEL): its interrupts come in the middle of
+                              the code, where the mask the C would otherwise carry in from a caller that never
+                              passed it matters
   reset                       RESET: the reset line pulsed for the devices
 Control is the instruction's Control (lifter.control): how execution goes on after it.
 
@@ -47,6 +52,12 @@ from dataclasses import dataclass
 from v60 import ir
 
 from . import disassembler as dis
+
+try:
+    import game_profile
+    STATUS_FROM_RUNTIME = getattr(game_profile, "TIMING_MODEL", False)
+except ImportError:    # (the core's own checks run without a game)
+    STATUS_FROM_RUNTIME = False
 
 D0, A0 = 0, 8
 SP = 15
@@ -341,8 +352,14 @@ class Lifter:
     def exception_if(self, condition, vector, pc):
         self.emit(ir.Effect("exception_if", (condition, const(vector), const(pc))))
 
+    def status_now(self):
+        """SR_SYSTEM as the runtime has it, before it is read (STATUS_FROM_RUNTIME)"""
+        if STATUS_FROM_RUNTIME:
+            self.emit(ir.Effect("status_read", (const(0), const(SR_SYSTEM))))
+
     def privileged(self):
         """In user mode a privileged instruction takes the privilege violation exception instead"""
+        self.status_now()
         user = ir.op("eq", (ir.op("and", (ir.Reg(SR_SYSTEM), const(SR_S)), 32), const(0)), 1)
         self.exception_if(user, VECTOR_PRIVILEGE, self.instruction.address)
 
@@ -414,6 +431,7 @@ def do_move_special(lifter, instruction):
         lifter.emit(ir.Effect("write_sr", (value,)))
         return
     if source.mode == "sr":
+        lifter.status_now()
         location = lifter.location(destination, 16)
         if location.address is not None:
             lifter.load(location.address, 16, "unused")    # (the core reads the destination first)

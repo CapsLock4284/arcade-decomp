@@ -78,7 +78,7 @@ INTERRUPT_VECTORS = range(25, 32)    # the autovectors: the board's interrupts
 TAKEN = {"frame_wait", "take_interrupts", "write_status", "return_from_exception", "stop", "reset_devices",
          "game_code", "game_code_count", "game_entry", "game_tables", "game_table_count", "invalid_jump", "main",
          "mem_read8", "mem_read16", "mem_read32", "mem_write8", "mem_write16", "mem_write32", "ram", "data_at",
-         "m68k_block", "m68k_cycles"}
+         "m68k_block", "m68k_cycles", "status_system"}
 
 
 def configure():

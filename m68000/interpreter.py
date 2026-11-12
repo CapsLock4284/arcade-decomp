@@ -369,8 +369,8 @@ class Machine:
                 elif statement.name == "stop":
                     self.write_sr(args[0])
                     raise Stopped()
-                elif statement.name == "reset":
-                    pass
+                elif statement.name in ("reset", "status_read"):
+                    pass    # (status_read: SR_SYSTEM, which the interpreter keeps as the CPU does)
                 else:
                     raise ValueError(f"unknown effect {statement.name}")
             else:

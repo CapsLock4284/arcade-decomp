@@ -654,8 +654,8 @@ class Program:
             # the index of the byte found goes to R27, its address to R28
             pair = register_parts(27, FULL) | register_parts(28, FULL)
             return set(), pair, pair
-        if name == "refresh_read":
-            # LD A,R: its register
+        if name in ("refresh_read", "status_read"):
+            # LD A,R: its register (the 68000's status_read: the status register's system byte, from the runtime)
             target = register_parts(statement.args[1].value, FULL)
             return set(), target, target
         if name == "search_bits_up":

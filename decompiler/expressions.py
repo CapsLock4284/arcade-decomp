@@ -847,7 +847,7 @@ def propagate_constants(function, call_results, context):
             elif isinstance(statement, ir.Effect):
                 for index in (27, 28) if statement.name in ("move_string", "move_bits_down", "move_bits_up", "search_bytes") else ():
                     known.pop(index, None)
-                if statement.name == "refresh_read":
+                if statement.name in ("refresh_read", "status_read"):
                     known.pop(statement.args[1].value, None)
                 if statement.name == "search_bits_up":
                     known.pop(statement.args[4].value, None)

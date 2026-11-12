@@ -33,8 +33,10 @@ said as calls and returns, as the C has them:
     instruction (Effect frame_wait) and takes the interrupts after it (take_interrupts), as the scaffold does;
     after an instruction that writes the status register, the interrupts it lets through are taken too.
 With the profile's TIMING_MODEL (a game whose runtime keeps the board's time: its frames, the program's
-slowdown), every basic block starts with Effect("m68k_block", cycles), the block's instructions' time
-(m68000/timing.py), where the runtime lets the time pass and takes an interrupt that has come; a branch whose ways
+slowdown), every basic block ends with Effect("m68k_block", cycles) (before the call that ends it), the block's instructions' time
+(m68000/timing.py), where the runtime lets the time pass and takes an interrupt that has come (a block ends after
+every call, so that a callee starts when its caller's time says and the code after it counts only when it is come
+back to); a branch whose ways
 take different times (Bcc, DBcc) adds the extra cycles of the longer way in its own block, on the branch's
 condition (Effect("m68k_cycles", condition ? cycles : 0)), so that the blocks and their edges are the same as
 without the timing (the code a branch reaches with another stack depth is copied by its address).
@@ -62,7 +64,7 @@ INTERRUPT_STACK_SWITCH = getattr(game_profile, "INTERRUPT_STACK_SWITCH", None)
 # stretches where a privileged instruction needs no check of the mode
 SUPERVISOR_CODE = getattr(game_profile, "SUPERVISOR_CODE", ())
 REPLACED_CODE = getattr(game_profile, "REPLACED_CODE", {})
-# the board's time kept (Effect m68k_block at every block's start, m68k_cycles on a branch's longer way)
+# the board's time kept (Effect m68k_block at every block's end, m68k_cycles on a branch's longer way)
 TIMING_MODEL = getattr(game_profile, "TIMING_MODEL", False)
 # the devices that do something when read (TMNT's K051960 in its ROM readback mode): a read there stays, its value
 # used or not
@@ -295,8 +297,6 @@ class Builder:
                 current = None
             if current is None:
                 current = Block(address)
-                if TIMING_MODEL:
-                    current.statements.append(ir.Effect("m68k_block", (ir.const(0),)))
                 function.blocks[address] = current
             current.addresses.append(address)
             before, extra = len(current.statements), len(self.extra_blocks)
@@ -337,19 +337,21 @@ class Builder:
         return function
 
     def time_blocks(self, function, body):
-        """Each block's instructions' time in its m68k_block (a branch the shorter way: timing.cycles); a block an
-        exception's check split off counts its own instructions"""
+        """Each block's instructions' time in its m68k_block (a branch the shorter way: timing.cycles), after its
+        instructions (before the call that ends it, if one does): an interrupt the time brings comes after the
+        instructions that were due before it, never sooner, as the 68000 takes one between two instructions when
+        it has come (a few instructions later at most). A block an exception's check split off counts its own"""
         for block in list(function.blocks.values()) + self.extra_blocks:
             if not block.addresses:
                 continue
             timed = ir.Effect("m68k_block", (ir.const(sum(timing.cycles(body[address])[0]
                                                            for address in block.addresses if address in body)),))
-            timed.origin = block.addresses[0]
-            first = block.statements[0] if block.statements else None
-            if isinstance(first, ir.Effect) and first.name == "m68k_block":
-                block.statements[0] = timed
+            timed.origin = block.addresses[-1]
+            last = block.statements[-1] if block.statements else None
+            if isinstance(last, ir.Call):
+                block.statements.insert(len(block.statements) - 1, timed)
             else:
-                block.statements.insert(0, timed)
+                block.statements.append(timed)
 
     @staticmethod
     def longer_way(statements, condition, cycles):
@@ -368,6 +370,10 @@ class Builder:
                 leaders.add(following)
             if instruction.mnemonic in ("divu", "divs", "chk", "trap", "trapv") or address == FRAME_WAIT:
                 leaders.add(following)    # (the exception's call goes on there)
+            if TIMING_MODEL and instruction.flow == dis.FLOW_CALL:
+                # (a timed game's: a block ends after a call, so that the code after it counts its time only when
+                # the callee comes back to it: one that returns past its caller leaves it uncounted)
+                leaders.add(following)
         return leaders & set(body)
 
     def lost_stack(self, instruction, body):

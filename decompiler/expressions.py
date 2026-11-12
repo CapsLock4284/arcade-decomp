@@ -957,7 +957,7 @@ def table_bases(function, call_results, context, is_table):
     return count
 
 
-QUIET_EFFECTS = ("z80_block", "z80_cycles", "interrupts_on", "interrupts_off", "port_out")    # (constant_addresses)
+QUIET_EFFECTS = ("z80_block", "z80_cycles", "m68k_block", "m68k_cycles", "interrupts_on", "interrupts_off", "port_out")    # (constant_addresses)
 
 
 def constant_addresses(function, call_results, context, is_address):

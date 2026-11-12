@@ -341,6 +341,12 @@ class Writer(emit.FunctionWriter):
             return [f"(void){self.exact(statement.args[0])};"]
         if name == "lost_stack":
             return [f"lost_stack(0x{statement.args[0].value:06X}u);"]
+        if name == "m68k_block":
+            # (a timed game's: the block's cycles pass, and an interrupt that has come is taken)
+            return [f"m68k_block({statement.args[0].value});"]
+        if name == "m68k_cycles":
+            # (the extra cycles of a branch's longer way)
+            return [f"m68k_cycles({self.exact(statement.args[0])});"]
         return super().effect(statement)
 
 

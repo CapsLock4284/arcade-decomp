@@ -32,6 +32,12 @@ said as calls and returns, as the C has them:
   - the profile's FRAME_WAIT, where the main loop finds nothing to do, waits for the next frame before its
     instruction (Effect frame_wait) and takes the interrupts after it (take_interrupts), as the scaffold does;
     after an instruction that writes the status register, the interrupts it lets through are taken too.
+With the profile's TIMING_MODEL (a game whose runtime keeps the board's time: its frames, the program's
+slowdown), every basic block starts with Effect("m68k_block", cycles), the block's instructions' time
+(m68000/timing.py), where the runtime lets the time pass and takes an interrupt that has come; a branch whose ways
+take different times (Bcc, DBcc) adds the extra cycles of the longer way in its own block, on the branch's
+condition (Effect("m68k_cycles", condition ? cycles : 0)), so that the blocks and their edges are the same as
+without the timing (the code a branch reaches with another stack depth is copied by its address).
 The status register's mode bit swaps the stack pointers on the 68000: the C has one stack (the decompiler's
 slots), so a write of the status register is the interrupt mask and the flags (write_sr), and USP is never read
 but in the stretch left out.
@@ -45,6 +51,7 @@ import recompile
 from . import analysis
 from . import disassembler as dis
 from . import lift
+from . import timing
 
 VECTORS = range(1, 48)
 FRAME_WAIT = getattr(game_profile, "FRAME_WAIT", None)
@@ -55,6 +62,8 @@ INTERRUPT_STACK_SWITCH = getattr(game_profile, "INTERRUPT_STACK_SWITCH", None)
 # stretches where a privileged instruction needs no check of the mode
 SUPERVISOR_CODE = getattr(game_profile, "SUPERVISOR_CODE", ())
 REPLACED_CODE = getattr(game_profile, "REPLACED_CODE", {})
+# the board's time kept (Effect m68k_block at every block's start, m68k_cycles on a branch's longer way)
+TIMING_MODEL = getattr(game_profile, "TIMING_MODEL", False)
 # the devices that do something when read (TMNT's K051960 in its ROM readback mode): a read there stays, its value
 # used or not
 EFFECT_READ_AREAS = list(getattr(game_profile, "EFFECT_READ_AREAS", ()))
@@ -286,6 +295,8 @@ class Builder:
                 current = None
             if current is None:
                 current = Block(address)
+                if TIMING_MODEL:
+                    current.statements.append(ir.Effect("m68k_block", (ir.const(0),)))
                 function.blocks[address] = current
             current.addresses.append(address)
             before, extra = len(current.statements), len(self.extra_blocks)
@@ -308,6 +319,8 @@ class Builder:
                 current.end.origin = address
             if current.end is not None:
                 current = None
+        if TIMING_MODEL:
+            self.time_blocks(function, body)
         for block in self.extra_blocks:
             function.blocks[block.label] = block
         self.close_transfers(function)
@@ -322,6 +335,26 @@ class Builder:
                            **{label: block for label, block in function.blocks.items()
                               if label != entry and label in reached}}
         return function
+
+    def time_blocks(self, function, body):
+        """Each block's instructions' time in its m68k_block (a branch the shorter way: timing.cycles); a block an
+        exception's check split off counts its own instructions"""
+        for block in list(function.blocks.values()) + self.extra_blocks:
+            if not block.addresses:
+                continue
+            timed = ir.Effect("m68k_block", (ir.const(sum(timing.cycles(body[address])[0]
+                                                           for address in block.addresses if address in body)),))
+            timed.origin = block.addresses[0]
+            first = block.statements[0] if block.statements else None
+            if isinstance(first, ir.Effect) and first.name == "m68k_block":
+                block.statements[0] = timed
+            else:
+                block.statements.insert(0, timed)
+
+    @staticmethod
+    def longer_way(statements, condition, cycles):
+        """The extra cycles of a branch's longer way, on its condition, before the branch (TIMING_MODEL)"""
+        statements.append(ir.Effect("m68k_cycles", (ir.op("select", (condition, ir.const(cycles), ir.const(0)), 32),)))
 
     def leaders(self, entry, body):
         leaders = {entry}
@@ -420,7 +453,14 @@ class Builder:
             block.end = self.transfer(function.entry, instruction.target)
             return None
         if mnemonic == "bcc":
-            block.end = ir.Branch(lift.condition_of(instruction.condition), key(instruction.target), following)
+            condition = lift.condition_of(instruction.condition)
+            if TIMING_MODEL:
+                _, extras = timing.cycles(instruction)
+                if "taken" in extras:
+                    self.longer_way(statements, condition, extras["taken"])
+                if "not_taken" in extras:
+                    self.longer_way(statements, lift.lnot(condition), extras["not_taken"])
+            block.end = ir.Branch(condition, key(instruction.target), following)
             return None
         if mnemonic in ("bsr", "jsr"):
             if instruction.target is not None:
@@ -527,14 +567,19 @@ class Builder:
         following = key(address + instruction.length)
         counter = lift.register(instruction.operands[0].reg)
         counting = block
+        extras = timing.cycles(instruction)[1] if TIMING_MODEL else {}
         if instruction.condition != "f":
             counting = Block(("count", address))
             self.extra_blocks.append(counting)
+            if extras:
+                self.longer_way(block.statements, lift.condition_of(instruction.condition), extras["condition"])
             block.end = ir.Branch(lift.condition_of(instruction.condition), following, counting.label)
         low = ir.Temp(f"t{address:06X}_1_counter", 16)
         counting.statements.append(ir.SetTemp(low, ir.op("sub", (ir.trunc(ir.Reg(counter), 16), lift.const(1, 16)), 16)))
         kept = ir.op("and", (ir.Reg(counter), lift.const(0xFFFF0000)), 32)
         counting.statements.append(ir.SetReg(counter, ir.op("or", (kept, ir.zext(low, 32)), 32)))
+        if extras:
+            self.longer_way(counting.statements, ir.op("eq", (low, lift.const(0xFFFF, 16)), 1), extras["expired"])
         counting.end = ir.Branch(ir.op("ne", (low, lift.const(0xFFFF, 16)), 1), key(instruction.target), following)
         return None
 
